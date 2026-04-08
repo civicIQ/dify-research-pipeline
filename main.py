@@ -1,15 +1,15 @@
+import os
+import json
 import requests
 import pandas as pd
 from datetime import datetime
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-import json
-
 
 API_KEY = os.environ.get("DIFY_API_KEY")
 creds_json = json.loads(os.environ.get("GOOGLE_CREDENTIALS_JSON"))
-BASE_URL = "https://api.dify.ai/v1"
 
+BASE_URL = "https://api.dify.ai/v1"
 headers = {
     "Authorization": f"Bearer {API_KEY}"
 }
@@ -25,7 +25,6 @@ def get_conversations():
 
         if not res.get("has_more"):
             break
-
         params["cursor"] = res.get("last_id")
 
     return conversations
@@ -37,10 +36,8 @@ def get_messages(conversation_id):
     res = requests.get(url, headers=headers, params=params).json()
     return res.get("data", [])
 
-
 def run_pipeline():
     conversations = get_conversations()
-
     message_rows = []
     participant_rows = []
 
@@ -48,7 +45,6 @@ def run_pipeline():
         conv_id = conv["id"]
         cr_id = conv.get("inputs", {}).get("cr_connect_id", "UNKNOWN")
 
-        #filter invalid participants
         if cr_id == "UNKNOWN":
             continue
 
@@ -74,7 +70,6 @@ def run_pipeline():
     df_messages = pd.DataFrame(message_rows)
     df_participants = pd.DataFrame(participant_rows)
 
-    #deduplication
     df_messages = df_messages.drop_duplicates(
         subset=["conversation_id", "content", "timestamp"]
     )
@@ -88,30 +83,25 @@ def upload_to_sheets(messages, participants):
         "https://www.googleapis.com/auth/drive"
     ]
 
-    creds = ServiceAccountCredentials.from_json_keyfile_name(
-        "credentials.json", scope
-    )
-
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_json, scope)
     client = gspread.authorize(creds)
 
     sheet = client.open("Dify Participant Data")
 
-    #messages tab
     try:
         sheet_messages = sheet.worksheet("messages")
         sheet_messages.clear()
-    except:
+    except gspread.WorksheetNotFound:
         sheet_messages = sheet.add_worksheet(title="messages", rows="1000", cols="20")
 
     sheet_messages.update(
         [messages.columns.values.tolist()] + messages.values.tolist()
     )
 
-    #participants tab
     try:
         sheet_participants = sheet.worksheet("participants")
         sheet_participants.clear()
-    except:
+    except gspread.WorksheetNotFound:
         sheet_participants = sheet.add_worksheet(title="participants", rows="1000", cols="20")
 
     sheet_participants.update(
@@ -123,8 +113,7 @@ if __name__ == "__main__":
 
     messages.to_csv("messages.csv", index=False)
     participants.to_csv("participants.csv", index=False)
+    print(f"Saved {len(messages)} messages locally")
 
-    print(f"Saved {len(messages)} messages")
     upload_to_sheets(messages, participants)
     print("Uploaded data to Google Sheets")
-
