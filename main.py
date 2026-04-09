@@ -42,11 +42,14 @@ def run_pipeline():
     participant_rows = []
 
     for conv in conversations:
+        print("FULL CONVERSATION:", conv)
+
         conv_id = conv["id"]
         cr_id = conv.get("inputs", {}).get("cr_connect_id", "UNKNOWN")
 
-        if cr_id == "UNKNOWN":
-            continue
+    if cr_id == "UNKNOWN":
+        print("SKIPPING BC NO CONNECT ID")
+        continue
 
         messages = get_messages(conv_id)
 
