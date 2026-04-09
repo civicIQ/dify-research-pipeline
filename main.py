@@ -17,14 +17,16 @@ headers = {
 def get_conversations():
     url = f"{BASE_URL}/conversations"
     conversations = []
-    params = {"limit": 100}
+    params = {"limit": 5} 
 
     while True:
         res = requests.get(url, headers=headers, params=params).json()
+        print("FULL RESPONSE:", res)
         conversations.extend(res.get("data", []))
 
         if not res.get("has_more"):
             break
+
         params["cursor"] = res.get("last_id")
 
     return conversations
