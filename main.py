@@ -5,126 +5,114 @@ import pandas as pd
 from datetime import datetime
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+from gspread_dataframe import set_with_dataframe
 
 API_KEY = os.environ.get("DIFY_API_KEY")
 creds_json = json.loads(os.environ.get("GOOGLE_CREDENTIALS_JSON"))
 
 BASE_URL = "https://api.dify.ai/v1"
-headers = {
-    "Authorization": f"Bearer {API_KEY}"
-}
+HEADERS = {"Authorization": f"Bearer {API_KEY}"}
 
-def get_conversations():
-    url = f"{BASE_URL}/conversations"
-    conversations = []
-    params = {"limit": 5} 
+
+def get_workflow_runs(limit=50):
+    url = f"{BASE_URL}/workflows/runs"
+    runs = []
+    params = {"limit": limit}
 
     while True:
-        res = requests.get(url, headers=headers, params=params).json()
-        print("FULL RESPONSE:", res)
-        conversations.extend(res.get("data", []))
-
-        if not res.get("has_more"):
+        try:
+            res = requests.get(url, headers=HEADERS, params=params)
+            res.raise_for_status()
+            data = res.json()
+        except Exception as e:
+            print("Error fetching workflow runs:", e)
             break
 
-        params["cursor"] = res.get("last_id")
+        print("FULL RESPONSE:", data)  
+        runs.extend(data.get("data", []))
 
-    return conversations
+        if not data.get("has_more"):
+            break
 
+        cursor = data.get("next_cursor") or data.get("last_id")
+        if not cursor:
+            break
+        params["cursor"] = cursor
 
-def get_messages(conversation_id):
-    url = f"{BASE_URL}/messages"
-    params = {"conversation_id": conversation_id}
-    res = requests.get(url, headers=headers, params=params).json()
-    return res.get("data", [])
+    return runs
+
 
 def run_pipeline():
-    conversations = get_conversations()
-    message_rows = []
-    participant_rows = []
+    runs = get_workflow_runs()
+    print("TOTAL RUNS:", len(runs))
 
-    for conv in conversations:
-        print("FULL CONVERSATION:", conv)
+    messages_data = []
+    participants_data = []
 
-        conv_id = conv["id"]
-        inputs = conv.get("inputs") or {}
+    for run in runs:
+        inputs = run.get("inputs", {})
+        outputs = run.get("outputs", {})
 
-        cr_id = (
-            inputs.get("cr_connect_id")
-            or conv.get("cr_connect_id")
-            or "UNKNOWN"
-        )
+        query = inputs.get("sys.query")
+        answer = outputs.get("answer")
+        user_id = inputs.get("sys.user_id")
+        workflow_id = run.get("workflow_id")
+        run_created_at = run.get("created_at")
 
-        # if cr_id == "UNKNOWN":
-        #     print("SKIPPING BC NO CONNECT ID")
-        #     continue
-
-        messages = get_messages(conv_id)
-
-        participant_rows.append({
-            "cr_connect_id": cr_id,
-            "conversation_id": conv_id,
-            "first_seen": conv.get("created_at"),
-            "message_count": len(messages)
-        })
-
-        for msg in messages:
-            message_rows.append({
-                "cr_connect_id": cr_id,
-                "conversation_id": conv_id,
-                "role": msg["role"],
-                "content": msg["content"],
-                "timestamp": msg["created_at"],
-                "pulled_at": datetime.now().isoformat()
+        if query and answer:
+            messages_data.append({
+                "user_id": user_id,
+                "user_message": query,
+                "ai_response": answer,
+                "workflow_run_id": run.get("id"),
+                "workflow_id": workflow_id,
+                "run_created_at": run_created_at
             })
+            participants_data.append({"user_id": user_id})
+        else:
+            print("Skipping run (missing query/answer):", run.get("id"))
 
-    df_messages = pd.DataFrame(message_rows)
-    df_participants = pd.DataFrame(participant_rows)
+        print("USER:", query)
+        print("AI:", answer)
 
-    df_messages = df_messages.drop_duplicates(
-        subset=["conversation_id", "content", "timestamp"]
-    )
+    messages_df = pd.DataFrame(messages_data)
+    participants_df = pd.DataFrame(participants_data).drop_duplicates()
 
-    return df_messages, df_participants
+    return messages_df, participants_df
 
 
-def upload_to_sheets(messages, participants):
+def upload_to_sheets(messages_df, participants_df, sheet_name="Dify Participant Data"):
     scope = [
         "https://spreadsheets.google.com/feeds",
         "https://www.googleapis.com/auth/drive"
     ]
-
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_json, scope)
     client = gspread.authorize(creds)
-
-    sheet = client.open("Dify Participant Data")
-
-    try:
-        sheet_messages = sheet.worksheet("messages")
-        sheet_messages.clear()
-    except gspread.WorksheetNotFound:
-        sheet_messages = sheet.add_worksheet(title="messages", rows="1000", cols="20")
-
-    sheet_messages.update(
-        [messages.columns.values.tolist()] + messages.values.tolist()
-    )
+    sheet = client.open(sheet_name)
 
     try:
-        sheet_participants = sheet.worksheet("participants")
-        sheet_participants.clear()
+        ws_messages = sheet.worksheet("messages")
+        ws_messages.clear()
     except gspread.WorksheetNotFound:
-        sheet_participants = sheet.add_worksheet(title="participants", rows="1000", cols="20")
+        ws_messages = sheet.add_worksheet(title="messages", rows="1000", cols="20")
 
-    sheet_participants.update(
-        [participants.columns.values.tolist()] + participants.values.tolist()
-    )
+    set_with_dataframe(ws_messages, messages_df)
+
+    try:
+        ws_participants = sheet.worksheet("participants")
+        ws_participants.clear()
+    except gspread.WorksheetNotFound:
+        ws_participants = sheet.add_worksheet(title="participants", rows="1000", cols="20")
+
+    set_with_dataframe(ws_participants, participants_df)
+
 
 if __name__ == "__main__":
-    messages, participants = run_pipeline()
+    messages_df, participants_df = run_pipeline()
 
-    messages.to_csv("messages.csv", index=False)
-    participants.to_csv("participants.csv", index=False)
-    print(f"Saved {len(messages)} messages locally")
+    messages_df.to_csv("messages.csv", index=False)
+    participants_df.to_csv("participants.csv", index=False)
+    print(f"Saved {len(messages_df)} messages locally")
 
-    upload_to_sheets(messages, participants)
-    print("Uploaded data to Google Sheets")
+    upload_to_sheets(messages_df, participants_df)
+    print("Uploaded data to Google Sheets successfully")
