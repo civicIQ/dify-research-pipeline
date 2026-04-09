@@ -47,9 +47,9 @@ def run_pipeline():
         conv_id = conv["id"]
         cr_id = conv.get("inputs", {}).get("cr_connect_id", "UNKNOWN")
 
-    if cr_id == "UNKNOWN":
-        print("SKIPPING BC NO CONNECT ID")
-        continue
+        if cr_id == "UNKNOWN":
+            print("SKIPPING BC NO CONNECT ID")
+            continue
 
         messages = get_messages(conv_id)
 
